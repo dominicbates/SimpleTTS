@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "SimpleTTS"
+version = "0.1.0"
+description = "SimpleTTS by Dom B"
+authors = [{ name = "Dom B" }]
+requires-python = ">=3.9"
+dependencies = [
+    "cmudict",
+    "torch",
+    "pandas",
+    "numpy",
+    "pyarrow",
+    "librosa",
+    "soundfile",
+    "vocos",
+    "torchcodec"
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
