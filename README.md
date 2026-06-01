@@ -13,7 +13,7 @@ python your_script.py
 ```
 ## Architecture
 
-1. **Text → phonemes**  
+1.  ~~**Text → phonemes**~~  ✅
    Convert input text into phonetic tokens.  
    Example:  
    `"Hello world"` → `[HE, LO, SPACE, WO, R, LD]`
@@ -38,7 +38,7 @@ python your_script.py
 6. **(Optional) refinement**  
    A Conv1D network can refine the final spectrogram.
 
-7. **Spectrogram → audio**  
+7. ~~**Spectrogram → audio**~~  ✅
    Convert to waveform using:
    - Griffin-Lim, or  
    - pretrained HiFi-GAN, or  
