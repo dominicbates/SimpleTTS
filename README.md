@@ -14,9 +14,9 @@ python your_script.py
 ## Architecture
 
 1.  ~~**Text → phonemes**~~  ✅
-   - Convert input text into phonetic tokens.  
-       - Example:  
-   - `"Hello world"` → `[HE, LO, SPACE, WO, R, LD]`
+    - Convert input text into phonetic tokens.  
+        - Example:  
+    - `"Hello world"` → `[HE, LO, SPACE, WO, R, LD]`
 
 2. **Transformer encoder**  
    - Pass tokens through a multi-layer Transformer to produce contextual embeddings:  
