@@ -17,7 +17,10 @@ dependencies = [
     "librosa",
     "soundfile",
     "vocos",
-    "torchcodec"
+    "torchcodec",
+    "datasets",
+    "argparse",
+    "tqdm"
 ]
 
 [tool.setuptools]
