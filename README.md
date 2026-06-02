@@ -21,28 +21,35 @@ python your_script.py
 2. **Transformer encoder**  
    - Pass tokens through a multi-layer Transformer to produce contextual embeddings:  
    - `[embedding_1, embedding_2, ...]`
+   - Start with sinusoidal positional encoding
 
 3. **Per-token prediction**  
    - For each embedding, predict:
-       - a small spectrogram patch (fixed window)
-       - a duration (distance from previous token)
+       - a small spectrogram patch (one fixed patch per token)
+           - We could add additional transformer or convolutional layers here if needed
+       - Absolute time position of this patch
+           - Absolute position + monatonicity loss is used (rather than just a time difference between patches) so errors are not compounded from previous time errors (although this problem isn't completely removed)
 
-4. **Time construction**  
-   - Build timestamps by cumulative sum of durations:  
-   - `t_i = t_{i-1} + d_i`
+4. **Rendering**  
+   - Place each token’s spectrogram patch into a global spectrogram given its predicted time.  
+   - Overlapping patches are linearly summed (with linear interpolation for training stability)
+   - This forms a final mel spectrogram
 
-5. **Rendering**  
-   - Place each token’s spectrogram patch into a global spectrogram at its predicted time.  
-   - Overlapping patches are summed (with linear interpolation for training stability).
-
-6. **(Optional) refinement**  
+5. **(Optional) refinement**  
    - A Conv1D network can refine the final spectrogram.
+  
+6. **Loss**
+   - Loss is computed in two components
+       - Spectrum loss: MAE (L1 loss) between predicted spectrum and real
+           - Values below t=0 are removed
+           - Values after t=t_max are penalised as if compared to silence
+        - Monatonicity loss: We penalise patches for being out of order
+        - We can adjust the relative weighting of each loss via a constant
 
-7. ~~**Spectrogram → audio**~~  ✅
+8. ~~**Spectrogram → audio**~~  ✅
    - Convert to waveform using:
-       - Griffin-Lim, or  
-       - pretrained HiFi-GAN, or  
-       - a separately trained model
+       - Vocos vocoder model
+       - Or simple random phase assumption
 
 ## Key idea
 
