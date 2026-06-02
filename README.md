@@ -25,9 +25,9 @@ python your_script.py
 
 3. **Per-token prediction**  
    - For each embedding, predict:
-       - a small spectrogram patch (one fixed patch per token)
+       - a small spectrogram patch (one fixed sized patch per token `[size * n_mels]`)
            - We could add additional transformer or convolutional layers here if needed
-       - Absolute time position of this patch
+       - Absolute time position of this patch `[t]`
            - Absolute position + monatonicity loss is used (rather than just a time difference between patches) so errors are not compounded from previous time errors (although this problem isn't completely removed)
 
 4. **Rendering**  
