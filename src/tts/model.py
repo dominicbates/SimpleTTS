@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+# Seems to be the case in the spctra
+SILENCE_VALUE = -8.0
+
 
 # ── Vocabulary ────────────────────────────────────────────────────────────────
 
@@ -105,12 +108,24 @@ class SpectrogramHead(nn.Module):
         return self.net(x).view(B, S, self.n_mels, self.patch_frames)
 
 
-class PositionHead(nn.Module):
-    """
-    Predicts absolute start position (in frames) for each token.
-    Output is unbounded (-inf to +inf); monotonicity is enforced via a
-    separate penalty loss rather than by construction.
-    """
+# class PositionHead(nn.Module):
+#     """
+#     Predicts absolute start position (in frames) for each token.
+#     Output is unbounded (-inf to +inf); monotonicity is enforced via a
+#     separate penalty loss rather than by construction.
+#     """
+#     def __init__(self, d_model: int):
+#         super().__init__()
+#         self.net = nn.Sequential(
+#             nn.Linear(d_model, d_model // 2),
+#             nn.GELU(),
+#             nn.Linear(d_model // 2, 1),
+#         )
+
+#     def forward(self, x):
+#         return self.net(x).squeeze(-1)   # (batch, seq_len), unbounded
+
+class DurationHead(nn.Module):
     def __init__(self, d_model: int):
         super().__init__()
         self.net = nn.Sequential(
@@ -120,7 +135,7 @@ class PositionHead(nn.Module):
         )
 
     def forward(self, x):
-        return self.net(x).squeeze(-1)   # (batch, seq_len), unbounded
+        return F.softplus(self.net(x)).squeeze(-1)  # (batch, seq_len), always positive
 
 
 # ── Tent Window ───────────────────────────────────────────────────────────────
@@ -155,7 +170,11 @@ def assemble_spectrogram(
     total_frames = max(target_frames, last_end)
 
     window     = make_tent_window(patch_frames, device)
-    spec_sum   = torch.zeros(n_mels, total_frames, device=device)
+    # spec_sum   = torch.zeros(n_mels, total_frames, device=device)
+    
+    # Fill with -8 which is roughly silence on this scale
+    spec_sum = torch.full((n_mels, total_frames), SILENCE_VALUE, device=device)
+
     weight_sum = torch.zeros(total_frames, device=device)
 
     for i in range(seq_len):
@@ -176,32 +195,64 @@ def assemble_spectrogram(
         weight_sum[canvas_start:canvas_end]    += window_slice
 
     # Weighted average: normalise by accumulated window weights
-    spec = spec_sum / weight_sum.clamp(min=1e-8).unsqueeze(0)
+    # spec = spec_sum / weight_sum.clamp(min=1e-8).unsqueeze(0)
+    
+    # Replace the final normalisation line in assemble_spectrogram
+    mask = weight_sum > 0
+    spec = spec_sum.clone()
+    spec[:, mask] = spec_sum[:, mask] / weight_sum[mask].unsqueeze(0)
+    # frames with no patches stay at -8.0 (silence)
+    
     return spec  # (n_mels, total_frames)
 
 
 # ── Loss ──────────────────────────────────────────────────────────────────────
 
+# def spectrogram_loss(
+#     pred_spec: torch.Tensor,    # (n_mels, total_frames)
+#     target_spec: torch.Tensor,  # (n_mels, target_frames)
+# ) -> torch.Tensor:
+#     """
+#     L1Loss loss (MAE) between predicted and target spectrogram.
+
+#     Frames within target_frames: compared directly.
+#     Frames beyond target_frames: penalised against silence (0.0).
+#     """
+#     n_mels, total_frames = pred_spec.shape
+#     target_frames        = target_spec.shape[1]
+
+#     if total_frames <= target_frames:
+#         # return F.mse_loss(pred_spec, target_spec[:, :total_frames])
+#         return torch.nn.L1Loss(pred_spec, target_spec[:, :total_frames])
+
+#     # loss_in  = F.mse_loss(pred_spec[:, :target_frames], target_spec)
+#     # loss_out = F.mse_loss(
+#     loss_in  = torch.nn.L1Loss(pred_spec[:, :target_frames], target_spec)
+#     loss_out = torch.nn.L1Loss(
+#         pred_spec[:, target_frames:],
+#         torch.zeros(n_mels, total_frames - target_frames, device=pred_spec.device),
+#     )
+#     return loss_in + loss_out
+
 def spectrogram_loss(
     pred_spec: torch.Tensor,    # (n_mels, total_frames)
     target_spec: torch.Tensor,  # (n_mels, target_frames)
 ) -> torch.Tensor:
-    """
-    MSE loss between predicted and target spectrogram.
-
-    Frames within target_frames: compared directly.
-    Frames beyond target_frames: penalised against silence (0.0).
-    """
     n_mels, total_frames = pred_spec.shape
     target_frames        = target_spec.shape[1]
 
     if total_frames <= target_frames:
-        return F.mse_loss(pred_spec, target_spec[:, :total_frames])
+        return F.l1_loss(pred_spec, target_spec[:, :total_frames])
 
-    loss_in  = F.mse_loss(pred_spec[:, :target_frames], target_spec)
-    loss_out = F.mse_loss(
+    loss_in  = F.l1_loss(pred_spec[:, :target_frames], target_spec)
+    loss_out = F.l1_loss(
         pred_spec[:, target_frames:],
         torch.zeros(n_mels, total_frames - target_frames, device=pred_spec.device),
+    )
+    # Compare to silence
+    loss_out = F.l1_loss(
+        pred_spec[:, target_frames:],
+        torch.full((n_mels, total_frames - target_frames), SILENCE_VALUE, device=pred_spec.device),
     )
     return loss_in + loss_out
 
@@ -233,27 +284,56 @@ class PhonemeToSpectrogram(nn.Module):
         nhead: int           = 4,
         num_layers: int      = 4,
         dim_feedforward: int = 1024,
-        n_mels: int          = 80,
+        n_mels: int          = 100,
         patch_frames: int    = 16,
         dropout: float       = 0.1,
-        monotonicity_weight: float = 1.0,
+        # monotonicity_weight: float = 1.0,
     ):
         super().__init__()
         self.patch_frames         = patch_frames
         self.n_mels               = n_mels
-        self.monotonicity_weight  = monotonicity_weight
+        # self.monotonicity_weight  = monotonicity_weight
 
         self.encoder   = PhonemeTransformerEncoder(
             vocab_size, d_model, nhead, num_layers, dim_feedforward, dropout
         )
         self.spec_head = SpectrogramHead(d_model, n_mels, patch_frames)
-        self.pos_head  = PositionHead(d_model)
+        # self.pos_head  = PositionHead(d_model)
+        self.dur_head = DurationHead(d_model)
+
+    # def forward(self, token_ids, padding_mask=None):
+    #     emb       = self.encoder(token_ids, padding_mask)
+    #     patches   = self.spec_head(emb)
+    #     positions = self.pos_head(emb)
+    #     return patches, positions
 
     def forward(self, token_ids, padding_mask=None):
         emb       = self.encoder(token_ids, padding_mask)
         patches   = self.spec_head(emb)
-        positions = self.pos_head(emb)
+        durations = self.dur_head(emb)                          # (B, S) positive
+        positions = torch.cumsum(durations, dim=-1) - durations # (B, S) start positions
         return patches, positions
+        
+    # def compute_loss(
+    #     self,
+    #     token_ids: torch.Tensor,      # (batch, seq_len)
+    #     target_spec: torch.Tensor,    # (batch, n_mels, target_frames)
+    #     padding_mask: torch.Tensor = None,
+    # ) -> torch.Tensor:
+    #     patches, positions = self.forward(token_ids, padding_mask)
+    #     target_frames = target_spec.shape[2]
+
+    #     loss_spec = torch.stack([
+    #         spectrogram_loss(
+    #             assemble_spectrogram(patches[b], positions[b], target_frames),
+    #             target_spec[b],
+    #         )
+    #         for b in range(token_ids.shape[0])
+    #     ]).mean()
+
+    #     loss_mono = monotonicity_loss(positions)
+
+    #     return loss_spec + self.monotonicity_weight * loss_mono
 
     def compute_loss(
         self,
@@ -263,8 +343,8 @@ class PhonemeToSpectrogram(nn.Module):
     ) -> torch.Tensor:
         patches, positions = self.forward(token_ids, padding_mask)
         target_frames = target_spec.shape[2]
-
-        loss_spec = torch.stack([
+    
+        return torch.stack([
             spectrogram_loss(
                 assemble_spectrogram(patches[b], positions[b], target_frames),
                 target_spec[b],
@@ -272,10 +352,7 @@ class PhonemeToSpectrogram(nn.Module):
             for b in range(token_ids.shape[0])
         ]).mean()
 
-        loss_mono = monotonicity_loss(positions)
-
-        return loss_spec + self.monotonicity_weight * loss_mono
-
+    
     @torch.no_grad()
     def synthesise(
         self,
