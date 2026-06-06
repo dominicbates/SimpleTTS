@@ -122,13 +122,6 @@ class DurationHead(nn.Module):
 
 
 # ── Spectrogram Assembly ──────────────────────────────────────────────────────
-# def assemble_spectrogram(
-#     patches:       torch.Tensor,  # (S, n_mels, patch_frames)
-#     positions:     torch.Tensor,  # (S,)  centre of each token in frames
-#     sigma:         torch.Tensor,  # scalar — shared learned Gaussian width
-#     silence:       torch.Tensor,  # scalar — shared learned silence offset
-#     target_frames: int,
-# ) -> torch.Tensor:
 def assemble_spectrogram(
     patches:       torch.Tensor,   # (S, n_mels, patch_frames)
     positions:     torch.Tensor,   # (S,)
@@ -163,16 +156,6 @@ def assemble_spectrogram(
 
     # Gaussian weights: (S, P, T)
     diff    = patch_centres.unsqueeze(2) - frame_idx.unsqueeze(0).unsqueeze(0)
-    # weights = torch.exp(-0.5 * diff ** 2 / sigma ** 2)
-
-    # # Weighted sum over all tokens and patch columns → (n_mels, T)
-    # patches_t = patches.permute(0, 2, 1)                                         # (S, P, n_mels)
-    # canvas    = (patches_t.unsqueeze(3) * weights.unsqueeze(2)).sum(dim=(0, 1))  # (n_mels, T)
-
-    # # Subtract learned silence: silent frames (sum ≈ 0) become ≈ -silence,
-    # # which the model learns to match the true silence value in the target.
-    # return canvas - silence
-
     weights = torch.exp(-0.5 * diff ** 2 / sigma ** 2)   # (S, P, T)
 
     # Zero out contributions from padding tokens
