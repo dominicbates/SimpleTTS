@@ -253,32 +253,62 @@ class PhonemeToSpectrogram(nn.Module):
         return patches, positions, padding_mask
         
 
+    # def compute_loss(
+    #     self,
+    #     token_ids:    torch.Tensor,   # (batch, seq_len)
+    #     target_spec:  torch.Tensor,   # (batch, n_mels, target_frames)
+    #     padding_mask: torch.Tensor = None,
+    # ) -> torch.Tensor:
+    #     patches, positions = self.forward(token_ids, padding_mask)
+    #     target_frames = target_spec.shape[2]
+
+    #     return torch.stack([
+    #         spectrogram_loss(
+    #             assemble_spectrogram(patches[b], positions[b], self.sigma, self.silence, target_frames),
+    #             target_spec[b],
+    #             self.sigma,
+    #             self.sigma_weight,
+    #         )
+    #         for b in range(token_ids.shape[0])
+    #     ]).mean()
+
+
     def compute_loss(
         self,
-        token_ids:    torch.Tensor,   # (batch, seq_len)
-        target_spec:  torch.Tensor,   # (batch, n_mels, target_frames)
+        token_ids:    torch.Tensor,
+        target_spec:  torch.Tensor,
         padding_mask: torch.Tensor = None,
     ) -> torch.Tensor:
-        patches, positions = self.forward(token_ids, padding_mask)
+        patches, positions, _ = self.forward(token_ids, padding_mask)  # unpack 3
         target_frames = target_spec.shape[2]
-
+    
         return torch.stack([
             spectrogram_loss(
-                assemble_spectrogram(patches[b], positions[b], self.sigma, self.silence, target_frames),
+                assemble_spectrogram(patches[b], positions[b], self.sigma, self.silence, target_frames,
+                                     padding_mask=padding_mask[b] if padding_mask is not None else None),
                 target_spec[b],
                 self.sigma,
                 self.sigma_weight,
             )
             for b in range(token_ids.shape[0])
         ]).mean()
+        
 
+    # @torch.no_grad()
+    # def synthesise(
+    #     self,
+    #     token_ids:    torch.Tensor,   # (1, seq_len)
+    #     max_frames:   int = 1024,#2048, #1024,
+    #     padding_mask: torch.Tensor = None,
+    # ) -> torch.Tensor:
+    #     """Inference: returns assembled spectrogram (n_mels, total_frames)."""
+    #     patches, positions = self.forward(token_ids, padding_mask)
+    #     return assemble_spectrogram(patches[0], positions[0], self.sigma, self.silence, max_frames)
+    
     @torch.no_grad()
-    def synthesise(
-        self,
-        token_ids:    torch.Tensor,   # (1, seq_len)
-        max_frames:   int = 1024,#2048, #1024,
-        padding_mask: torch.Tensor = None,
-    ) -> torch.Tensor:
-        """Inference: returns assembled spectrogram (n_mels, total_frames)."""
-        patches, positions = self.forward(token_ids, padding_mask)
-        return assemble_spectrogram(patches[0], positions[0], self.sigma, self.silence, max_frames)
+    def synthesise(self, token_ids, max_frames=1024, padding_mask=None):
+        patches, positions, _ = self.forward(token_ids, padding_mask)
+        return assemble_spectrogram(
+            patches[0], positions[0], self.sigma, self.silence, max_frames,
+            padding_mask=padding_mask[0] if padding_mask is not None else None,
+        )
