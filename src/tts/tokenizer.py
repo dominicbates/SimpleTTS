@@ -38,7 +38,7 @@ def tokenize(text):
 
 
 
-def phonemize(text):
+def phonemize(text, single_unknown = True):
     '''
     Takes input text and splits into sounds (via ARPABET) along with
     punctiation tokens. Unknown characters are ignored, and unknown
@@ -89,9 +89,14 @@ def phonemize(text):
         if tok in arpabet:
             out.extend(arpabet[tok][0])
         else:
-            for ch in tok:
-                if ch.isalnum():
-                    out.append("<UNK_" + ch.upper() + ">")
+            # Just pass to single unknown token
+            if single_unknown:
+                out.append("<UNK_WORD>")
+            # Pass all characters individually
+            else:
+                for ch in tok:
+                    if ch.isalnum():
+                        out.append("<UNK_" + ch.upper() + ">")
 
         # Only append if no hyphen next
         if next_token != '-':
