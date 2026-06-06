@@ -148,64 +148,123 @@ def make_tent_window(patch_frames: int, device) -> torch.Tensor:
 
 # ── Spectrogram Assembly ──────────────────────────────────────────────────────
 
+# def assemble_spectrogram(
+#     patches: torch.Tensor,    # (seq_len, n_mels, patch_frames)
+#     positions: torch.Tensor,  # (seq_len,) absolute start frame per token, unbounded
+#     target_frames: int,
+# ) -> torch.Tensor:
+#     """
+#     Place each token's patch at its predicted absolute position and blend
+#     overlaps using a tent-windowed weighted average.
+
+#     Patches extending before t=0 are trimmed on the left.
+#     Patches extending past target_frames are included in the canvas; the loss
+#     function penalises that region against silence without any hard clamping.
+
+#     Returns: (n_mels, total_frames) where total_frames >= target_frames.
+#     """
+#     seq_len, n_mels, patch_frames = patches.shape
+#     device = patches.device
+
+#     last_end     = int((positions[-1] + patch_frames).item())
+#     total_frames = max(target_frames, last_end)
+
+#     window     = make_tent_window(patch_frames, device)
+#     # spec_sum   = torch.zeros(n_mels, total_frames, device=device)
+    
+#     # Fill with -8 which is roughly silence on this scale
+#     spec_sum = torch.full((n_mels, total_frames), SILENCE_VALUE, device=device)
+
+#     weight_sum = torch.zeros(total_frames, device=device)
+
+#     for i in range(seq_len):
+#         t0_int = int(positions[i].item())
+
+#         # Left-edge trim: skip frames that fall before t=0
+#         patch_offset = max(0, -t0_int)
+#         canvas_start = max(0, t0_int)
+#         canvas_end   = min(t0_int + patch_frames, total_frames)
+#         w_len        = canvas_end - canvas_start
+#         if w_len <= 0:
+#             continue
+
+#         patch_slice  = patches[i, :, patch_offset : patch_offset + w_len]
+#         window_slice = window[patch_offset : patch_offset + w_len]
+
+#         spec_sum  [:, canvas_start:canvas_end] += patch_slice * window_slice.unsqueeze(0)
+#         weight_sum[canvas_start:canvas_end]    += window_slice
+
+#     # Weighted average: normalise by accumulated window weights
+#     # spec = spec_sum / weight_sum.clamp(min=1e-8).unsqueeze(0)
+    
+#     # Replace the final normalisation line in assemble_spectrogram
+#     mask = weight_sum > 0
+#     spec = spec_sum.clone()
+#     spec[:, mask] = spec_sum[:, mask] / weight_sum[mask].unsqueeze(0)
+#     # frames with no patches stay at -8.0 (silence)
+    
+#     return spec  # (n_mels, total_frames)
+
+
+
 def assemble_spectrogram(
-    patches: torch.Tensor,    # (seq_len, n_mels, patch_frames)
-    positions: torch.Tensor,  # (seq_len,) absolute start frame per token, unbounded
+    patches: torch.Tensor,     # (S, n_mels, P)
+    positions: torch.Tensor,   # (S,)
     target_frames: int,
-) -> torch.Tensor:
+):
     """
-    Place each token's patch at its predicted absolute position and blend
-    overlaps using a tent-windowed weighted average.
+    Fully differentiable spectrogram assembly.
 
-    Patches extending before t=0 are trimmed on the left.
-    Patches extending past target_frames are included in the canvas; the loss
-    function penalises that region against silence without any hard clamping.
-
-    Returns: (n_mels, total_frames) where total_frames >= target_frames.
+    Replaces discrete splatting with continuous alignment.
     """
-    seq_len, n_mels, patch_frames = patches.shape
+
+    S, n_mels, P = patches.shape
     device = patches.device
 
-    last_end     = int((positions[-1] + patch_frames).item())
-    total_frames = max(target_frames, last_end)
+    # --- output canvas ---
+    t = torch.arange(target_frames, device=device).float()  # (T,)
 
-    window     = make_tent_window(patch_frames, device)
-    # spec_sum   = torch.zeros(n_mels, total_frames, device=device)
+    # We'll accumulate contributions here
+    spec = torch.zeros(n_mels, target_frames, device=device)
+    weight = torch.zeros(target_frames, device=device)
+
+    # --- temperature controls sharpness (can anneal) ---
+    sigma = 5.0 # 2.0  # try 5.0 early training, then anneal down
+
+    for i in range(S):
+
+        # (T,) continuous center for this token patch start
+        center = positions[i]  # scalar float tensor
+
+        # local offsets inside patch
+        p = torch.arange(P, device=device).float()  # (P,)
+
+        # broadcast to (P, T)
+        # each patch frame has its own center in time
+        centers = center + p[:, None]  # (P, 1)
+
+        # compute soft assignment to all output frames
+        # (P, T)
+        dist2 = (t[None, :] - centers) ** 2
+        w = torch.exp(-dist2 / (2 * sigma * sigma))
+
+        # optional: normalize per patch frame (prevents energy explosion)
+        w = w / (w.sum(dim=-1, keepdim=True) + 1e-8)
+
+        # accumulate
+        # patches[i]: (n_mels, P)
+        # w: (P, T)
+        spec += torch.einsum("mp,pt->mt", patches[i], w)
+
+        weight += w.sum(dim=0)
+
+    # normalize overlapping contributions
+    spec = spec / (weight.unsqueeze(0) + 1e-8)
+
+    spec -= 8 # Baseline to -8 
+    return spec
+
     
-    # Fill with -8 which is roughly silence on this scale
-    spec_sum = torch.full((n_mels, total_frames), SILENCE_VALUE, device=device)
-
-    weight_sum = torch.zeros(total_frames, device=device)
-
-    for i in range(seq_len):
-        t0_int = int(positions[i].item())
-
-        # Left-edge trim: skip frames that fall before t=0
-        patch_offset = max(0, -t0_int)
-        canvas_start = max(0, t0_int)
-        canvas_end   = min(t0_int + patch_frames, total_frames)
-        w_len        = canvas_end - canvas_start
-        if w_len <= 0:
-            continue
-
-        patch_slice  = patches[i, :, patch_offset : patch_offset + w_len]
-        window_slice = window[patch_offset : patch_offset + w_len]
-
-        spec_sum  [:, canvas_start:canvas_end] += patch_slice * window_slice.unsqueeze(0)
-        weight_sum[canvas_start:canvas_end]    += window_slice
-
-    # Weighted average: normalise by accumulated window weights
-    # spec = spec_sum / weight_sum.clamp(min=1e-8).unsqueeze(0)
-    
-    # Replace the final normalisation line in assemble_spectrogram
-    mask = weight_sum > 0
-    spec = spec_sum.clone()
-    spec[:, mask] = spec_sum[:, mask] / weight_sum[mask].unsqueeze(0)
-    # frames with no patches stay at -8.0 (silence)
-    
-    return spec  # (n_mels, total_frames)
-
-
 # ── Loss ──────────────────────────────────────────────────────────────────────
 
 # def spectrogram_loss(
@@ -357,7 +416,7 @@ class PhonemeToSpectrogram(nn.Module):
     def synthesise(
         self,
         token_ids: torch.Tensor,      # (1, seq_len)
-        max_frames: int = 2048,
+        max_frames: int = 1024,#2048#, roughly 10 seconds
         padding_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """Inference: returns assembled spectrogram (n_mels, total_frames)."""
